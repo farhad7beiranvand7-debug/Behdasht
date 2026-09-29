@@ -1,4 +1,4 @@
-name: Build Android Release
+name: Build Android APK
 
 on:
   workflow_dispatch:
@@ -7,98 +7,51 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    name: Build AAB and APK
+    name: Build Release APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Source
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
+          flutter-version: '3.29.0'
+          channel: stable
           cache: true
 
-      - name: Generate Android Scaffold if missing
+      - name: Recreate Android Project
         run: |
-          if [ ! -d "android" ]; then
-            flutter create . --platforms=android --org ir.pezeshk
-          fi
+          rm -rf android
+          flutter create . --platforms=android --org ir.pezeshk --project-name behdasht
 
-      - name: Configure Desugaring and MinSDK
+      - name: Enable Core Library Desugaring
         run: |
-          python3 -c '
-          import os
-
-          # Path detection (Groovy or Kotlin DSL)
-          target_file = None
-          for path in ["android/app/build.gradle.kts", "android/app/build.gradle"]:
-              if os.path.exists(path):
-                  target_file = path
-                  break
-
-          if not target_file:
-              print("No gradle file found!")
-              exit(1)
-
-          with open(target_file, "r") as f:
-              content = f.read()
-
-          is_kts = target_file.endswith(".kts")
-
-          if is_kts:
-              # Kotlin DSL
-              if "coreLibraryDesugaring" not in content:
-                  if "dependencies {" in content:
-                      content = content.replace("dependencies {", "dependencies {\n    coreLibraryDesugaring(\"com.android.tools:desugar_jdk_libs:2.0.4\")")
-                  else:
-                      content += "\ndependencies {\n    coreLibraryDesugaring(\"com.android.tools:desugar_jdk_libs:2.0.4\")\n}\n"
-
-              if "isCoreLibraryDesugaringEnabled" not in content and "coreLibraryDesugaringEnabled" not in content:
-                  content = content.replace("compileOptions {", "compileOptions {\n        isCoreLibraryDesugaringEnabled = true")
-
-              # Ensure minSdkVersion is at least 21
-              content = content.replace("minSdk = flutter.minSdkVersion", "minSdk = 21")
-          else:
-              # Groovy DSL
-              if "coreLibraryDesugaring" not in content:
-                  if "dependencies {" in content:
-                      content = content.replace("dependencies {", "dependencies {\n    coreLibraryDesugaring \"com.android.tools:desugar_jdk_libs:2.0.4\"")
-                  else:
-                      content += "\ndependencies {\n    coreLibraryDesugaring \"com.android.tools:desugar_jdk_libs:2.0.4\"\n}\n"
-
-              if "coreLibraryDesugaringEnabled" not in content:
-                  content = content.replace("compileOptions {", "compileOptions {\n        coreLibraryDesugaringEnabled true")
-
-              content = content.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 21")
-
-          with open(target_file, "w") as f:
-              f.write(content)
-          '
+          sed -i '/compileOptions {/a \        coreLibraryDesugaringEnabled true' android/app/build.gradle
+          sed -i '/dependencies {/a \    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.0.4"' android/app/build.gradle
 
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: Build App Bundle (AAB for Cafe Bazaar)
-        run: flutter build appbundle --release --no-tree-shake-icons
-
-      - name: Build APK (for Testing)
+      - name: Build Android Release APK
         run: flutter build apk --release --no-tree-shake-icons
 
-      - name: Upload Artifacts
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-builds
-          path: |
-            build/app/outputs/bundle/release/*.aab
-            build/app/outputs/flutter-apk/*.apk
-          retention-days: 30
+          name: behdasht-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
