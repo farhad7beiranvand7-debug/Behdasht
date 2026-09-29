@@ -1,19 +1,152 @@
 import 'dart:convert';
 import 'dart:io';
-
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide Person;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart' hide Person;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tz;
 
-import 'data/health_rules.dart';
-import 'models/person.dart';
-import 'models/care_item.dart';
-import 'services/care_engine.dart';
-
 final notifications = FlutterLocalNotificationsPlugin();
 final dateFormat = DateFormat('yyyy/MM/dd');
+
+const List<String> appConditionOptions = [
+  'دیابت',
+  'فشار خون بالا',
+  'بیماری قلبی',
+  'کم‌کاری تیروئید',
+  'پرکاری تیروئید',
+  'آسم و آلرژی',
+  'کم‌خونی',
+  'چربی خون',
+  'بیماری کلیوی',
+  'کبد چرب',
+  'سابقه سکته',
+];
+
+enum CareItemKind {
+  vaccine,
+  checkup,
+  screening,
+  pregnancy,
+  periodic,
+  reminder,
+}
+
+class CareItem {
+  final String id;
+  final String title;
+  final String personName;
+  final DateTime dueDate;
+  final CareItemKind kind;
+  final String source;
+
+  const CareItem({
+    required this.id,
+    required this.title,
+    required this.personName,
+    required this.dueDate,
+    required this.kind,
+    required this.source,
+  });
+}
+
+class Person {
+  final String id;
+  final String firstName;
+  final String lastName;
+  final String gender;
+  final DateTime birthDate;
+  final DateTime? createdAt;
+  final List<String> conditions;
+  final bool pregnant;
+  final DateTime? pregnancyStartDate;
+
+  const Person({
+    required this.id,
+    required this.firstName,
+    required this.lastName,
+    required this.gender,
+    required this.birthDate,
+    this.createdAt,
+    this.conditions = const [],
+    this.pregnant = false,
+    this.pregnancyStartDate,
+  });
+
+  String get fullName => ('$firstName $lastName').trim();
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'firstName': firstName,
+        'lastName': lastName,
+        'gender': gender,
+        'birthDate': birthDate.toIso8601String(),
+        'createdAt': (createdAt ?? DateTime.now()).toIso8601String(),
+        'conditions': conditions,
+        'pregnant': pregnant,
+        'pregnancyStartDate': pregnancyStartDate?.toIso8601String(),
+      };
+
+  factory Person.fromJson(Map<String, dynamic> json) => Person(
+        id: json['id'] as String? ?? DateTime.now().microsecondsSinceEpoch.toString(),
+        firstName: json['firstName'] as String? ?? '',
+        lastName: json['lastName'] as String? ?? '',
+        gender: json['gender'] as String? ?? 'زن',
+        birthDate: DateTime.tryParse(json['birthDate'] as String? ?? '') ?? DateTime(2000, 1, 1),
+        createdAt: json['createdAt'] != null ? DateTime.tryParse(json['createdAt'] as String) : null,
+        conditions: (json['conditions'] as List?)?.map((e) => e.toString()).toList() ?? [],
+        pregnant: json['pregnant'] as bool? ?? false,
+        pregnancyStartDate: json['pregnancyStartDate'] != null ? DateTime.tryParse(json['pregnancyStartDate'] as String) : null,
+      );
+}
+
+class CareEngine {
+  static List<CareItem> build(Person person, DateTime now) {
+    final items = <CareItem>[];
+    final b = person.birthDate;
+
+    void addVac(String id, String title, int months) {
+      final due = DateTime(b.year, b.month + months, b.day);
+      if (due.isAfter(now.subtract(const Duration(days: 30)))) {
+        items.add(CareItem(id: '${person.id}_$id', title: title, personName: person.fullName, dueDate: due, kind: CareItemKind.vaccine, source: 'واکسیناسیون کشوری'));
+      }
+    }
+
+    addVac('v0', 'واکسن بدو تولد (ب ث ژ، فلج اطفال خوراکی، هپاتیت ب)', 0);
+    addVac('v2', 'واکسن ۲ ماهگی (پنج‌گانه، فلج اطفال خوراکی)', 2);
+    addVac('v4', 'واکسن ۴ ماهگی (پنج‌گانه، فلج اطفال خوراکی و تزریقی)', 4);
+    addVac('v6', 'واکسن ۶ ماهگی (پنج‌گانه، فلج اطفال خوراکی)', 6);
+    addVac('v12', 'واکسن ۱۲ ماهگی (ام‌ام‌آر)', 12);
+    addVac('v18', 'واکسن ۱۸ ماهگی (سه‌گانه، فلج اطفال خوراکی، ام‌ام‌آر)', 18);
+    addVac('v72', 'واکسن ۶ سالگی (سه‌گانه، فلج اطفال خوراکی)', 72);
+
+    for (final c in person.conditions) {
+      if (c == 'دیابت') {
+        items.add(CareItem(id: '${person.id}_diab', title: 'آزمایش دوره‌ای قند خون (HbA1c)', personName: person.fullName, dueDate: now.add(const Duration(days: 90)), kind: CareItemKind.periodic, source: 'مراقبت دیابت'));
+      } else if (c == 'فشار خون بالا') {
+        items.add(CareItem(id: '${person.id}_htn', title: 'کنترل ماهانه فشار خون', personName: person.fullName, dueDate: now.add(const Duration(days: 30)), kind: CareItemKind.periodic, source: 'مراقبت فشار خون'));
+      } else if (c.contains('تیروئید')) {
+        items.add(CareItem(id: '${person.id}_thy', title: 'آزمایش دوره‌ای تیروئید (TSH)', personName: person.fullName, dueDate: now.add(const Duration(days: 180)), kind: CareItemKind.periodic, source: 'مراقبت تیروئید'));
+      }
+    }
+
+    if (person.pregnant && person.pregnancyStartDate != null) {
+      final start = person.pregnancyStartDate!;
+      void addPreg(String id, String title, int weeks) {
+        final due = start.add(Duration(days: weeks * 7));
+        if (due.isAfter(now.subtract(const Duration(days: 14)))) {
+          items.add(CareItem(id: '${person.id}_$id', title: title, personName: person.fullName, dueDate: due, kind: CareItemKind.pregnancy, source: 'مراقبت بارداری'));
+        }
+      }
+      addPreg('p1', 'مراقبت پیش از هفته ۱۲ بارداری', 10);
+      addPreg('p2', 'سونوگرافی آنومالی و غربالگری مرحله دوم', 18);
+      addPreg('p3', 'آزمایش دیابت بارداری (هفته ۲۴ تا ۲۸)', 26);
+      addPreg('p4', 'ارزیابی نهایی و آماده‌سازی زایمان (هفته ۳۶)', 36);
+    }
+
+    return items;
+  }
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -100,14 +233,17 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     if (loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    final all = people.expand((p) => CareEngine.build(p, DateTime.now())).toList()..sort((a,b) => a.dueDate.compareTo(b.dueDate));
+    final all = people.expand((p) => CareEngine.build(p, DateTime.now())).toList()..sort((a, b) => a.dueDate.compareTo(b.dueDate));
     final upcoming = all.where((x) => x.dueDate.isBefore(DateTime.now().add(const Duration(days: 60)))).take(12).toList();
-    return Directionality(textDirection: TextDirection.rtl, child: Scaffold(
-      appBar: AppBar(title: const Text('پزشک خانواده', style: TextStyle(fontWeight: FontWeight.bold)), actions: [IconButton(tooltip: 'افزودن', onPressed: () => _addOrEdit(), icon: const Icon(Icons.person_add_alt_1))]),
-      body: tab == 0 ? Dashboard(people: people, items: upcoming, onAdd: () => _addOrEdit(), onEdit: _addOrEdit, onDelete: _delete) : tab == 1 ? FamilyList(people: people, onEdit: _addOrEdit, onDelete: _delete, onAdd: () => _addOrEdit()) : const AboutPage(),
-      bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (v) => setState(() => tab = v), destinations: const [NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'خانه'), NavigationDestination(icon: Icon(Icons.groups_outlined), selectedIcon: Icon(Icons.groups), label: 'خانواده'), NavigationDestination(icon: Icon(Icons.info_outline), label: 'درباره')]),
-      floatingActionButton: tab == 1 ? FloatingActionButton.extended(onPressed: () => _addOrEdit(), icon: const Icon(Icons.add), label: const Text('عضو جدید')) : null,
-    ));
+    return Directionality(
+      textDirection: Directionality.of(context),
+      child: Scaffold(
+        appBar: AppBar(title: const Text('پزشک خانواده', style: TextStyle(fontWeight: FontWeight.bold)), actions: [IconButton(tooltip: 'افزودن', onPressed: () => _addOrEdit(), icon: const Icon(Icons.person_add_alt_1))]),
+        body: tab == 0 ? Dashboard(people: people, items: upcoming, onAdd: () => _addOrEdit(), onEdit: _addOrEdit, onDelete: _delete) : tab == 1 ? FamilyList(people: people, onEdit: _addOrEdit, onDelete: _delete, onAdd: () => _addOrEdit()) : const AboutPage(),
+        bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (v) => setState(() => tab = v), destinations: const [NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'خانه'), NavigationDestination(icon: Icon(Icons.groups_outlined), selectedIcon: Icon(Icons.groups), label: 'خانواده'), NavigationDestination(icon: Icon(Icons.info_outline), label: 'درباره')]),
+        floatingActionButton: tab == 1 ? FloatingActionButton.extended(onPressed: () => _addOrEdit(), icon: const Icon(Icons.add), label: const Text('عضو جدید')) : null,
+      ),
+    );
   }
 }
 
@@ -148,7 +284,7 @@ class CareTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final days = item.dueDate.difference(DateTime.now()).inDays;
     final text = days < 0 ? 'گذشته' : days == 0 ? 'امروز' : days == 1 ? 'فردا' : '$days روز دیگر';
-    return Card(child: ListTile(leading: CircleAvatar(child: Icon(item.kind == CareKind.vaccine ? Icons.vaccines : item.kind == CareKind.pregnancy ? Icons.pregnant_woman : Icons.medical_services)), title: Text(item.title), subtitle: Text('${item.personName} • ${dateFormat.format(item.dueDate)}'), trailing: Text(text, style: TextStyle(fontWeight: FontWeight.bold, color: days < 0 ? Theme.of(context).colorScheme.error : null))));
+    return Card(child: ListTile(leading: CircleAvatar(child: Icon(item.kind == CareItemKind.vaccine ? Icons.vaccines : item.kind == CareItemKind.pregnancy ? Icons.pregnant_woman : Icons.medical_services)), title: Text(item.title), subtitle: Text('${item.personName} • ${dateFormat.format(item.dueDate)}'), trailing: Text(text, style: TextStyle(fontWeight: FontWeight.bold, color: days < 0 ? Theme.of(context).colorScheme.error : null))));
   }
 }
 
@@ -188,7 +324,7 @@ class _PersonFormState extends State<PersonForm> {
     final p = widget.person;
     first = TextEditingController(text: p?.firstName);
     last = TextEditingController(text: p?.lastName);
-    birth = p?.birthDate ?? DateTime(2020,1,1);
+    birth = p?.birthDate ?? DateTime(2020, 1, 1);
     gender = p?.gender ?? 'زن';
     pregnant = p?.pregnant ?? false;
     pregStart = p?.pregnancyStartDate;
@@ -208,7 +344,7 @@ class _PersonFormState extends State<PersonForm> {
   }
 
   @override
-  Widget build(BuildContext context) => Directionality(textDirection: TextDirection.rtl, child: Scaffold(
+  Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: Text(widget.person == null ? 'عضو جدید' : 'ویرایش عضو')),
     body: ListView(padding: const EdgeInsets.all(16), children: [
       TextField(controller: first, decoration: const InputDecoration(labelText: 'نام', border: OutlineInputBorder())),
@@ -221,7 +357,7 @@ class _PersonFormState extends State<PersonForm> {
       const SizedBox(height: 12),
       const Text('بیماری یا شرایط مهم', style: TextStyle(fontWeight: FontWeight.bold)),
       const SizedBox(height: 8),
-      Wrap(spacing: 8, runSpacing: 4, children: conditionOptions.map((x) => FilterChip(label: Text(x), selected: selected.contains(x), onSelected: (v) => setState(() => v ? selected.add(x) : selected.remove(x)))).toList()),
+      Wrap(spacing: 8, runSpacing: 4, children: appConditionOptions.map((x) => FilterChip(label: Text(x), selected: selected.contains(x), onSelected: (v) => setState(() => v ? selected.add(x) : selected.remove(x)))).toList()),
       const SizedBox(height: 8),
       SwitchListTile(title: const Text('بارداری'), value: pregnant, onChanged: gender == 'زن' ? (v) => setState(() => pregnant = v) : null),
       if (pregnant) Card(child: ListTile(title: const Text('تاریخ شروع/آخرین قاعدگی'), subtitle: Text(pregStart == null ? 'انتخاب نشده' : dateFormat.format(pregStart!)), trailing: const Icon(Icons.calendar_month), onTap: () async {
@@ -237,7 +373,7 @@ class _PersonFormState extends State<PersonForm> {
         Navigator.pop(context, Person(id: widget.person?.id ?? DateTime.now().microsecondsSinceEpoch.toString(), firstName: first.text.trim(), lastName: last.text.trim(), gender: gender, birthDate: birth, createdAt: widget.person?.createdAt, conditions: selected.toList(), pregnant: pregnant, pregnancyStartDate: pregStart));
       }, icon: const Icon(Icons.save), label: const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Text('ذخیره اطلاعات')))
     ]),
-  ));
+  );
 }
 
 class AboutPage extends StatelessWidget {
