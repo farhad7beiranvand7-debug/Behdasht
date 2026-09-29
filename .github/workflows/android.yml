@@ -1,12 +1,15 @@
 name: Build Android Release
 
 on:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
 
 jobs:
   build:
+    name: Build AAB and APK
     runs-on: ubuntu-latest
 
     steps:
@@ -22,64 +25,46 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.3'
           channel: 'stable'
           cache: true
 
       - name: Generate Android Scaffold if missing
         run: |
           if [ ! -d "android" ]; then
-            flutter create . --org com.pezeshk.khanevadeh --project-name pezeshk_khanevadeh
+            flutter create . --platforms=android --org ir.pezeshk
           fi
 
       - name: Configure Desugaring and MinSDK
         run: |
-          BUILD_GRADLE="android/app/build.gradle"
-          if grep -q "minSdkVersion" "$BUILD_GRADLE"; then
-            sed -i 's/minSdkVersion .*/minSdkVersion 21/g' "$BUILD_GRADLE"
-          fi
-          if ! grep -q "coreLibraryDesugaring" "$BUILD_GRADLE"; then
-            sed -i '/compileOptions {/a \        coreLibraryDesugaringEnabled true' "$BUILD_GRADLE"
-            sed -i '/dependencies {/a \    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.0.4"' "$BUILD_GRADLE"
+          GRADLE_FILE="android/app/build.gradle"
+          if [ -f "android/app/build.gradle.kts" ]; then
+            GRADLE_FILE="android/app/build.gradle.kts"
           fi
 
-      - name: Setup Signing Keystore
-        run: |
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
-            cat <<EOF > android/key.properties
-          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
-          storeFile=upload-keystore.jks
-          EOF
+          python3 -c '
+          with open("android/app/build.gradle", "r") as f:
+              content = f.read()
 
-            BUILD_GRADLE="android/app/build.gradle"
-            sed -i '/buildTypes {/i \
-            signingConfigs {\
-                release {\
-                    def keystoreProperties = new Properties()\
-                    def keystorePropertiesFile = rootProject.file("key.properties")\
-                    if (keystorePropertiesFile.exists()) {\
-                        keystoreProperties.load(new FileInputStream(keystorePropertiesFile))\
-                    }\
-                    keyAlias = keystoreProperties["keyAlias"]\
-                    keyPassword = keystoreProperties["keyPassword"]\
-                    storeFile = keystoreProperties["storeFile"] ? file(keystoreProperties["storeFile"]) : null\
-                    storePassword = keystoreProperties["storePassword"]\
-                }\
-            }' "$BUILD_GRADLE"
-            sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.release/g' "$BUILD_GRADLE"
-          fi
+          # Ensure coreLibraryDesugaring dependency exists
+          if "coreLibraryDesugaring" not in content:
+              content = content.replace("dependencies {", "dependencies {\n    coreLibraryDesugaring \"com.android.tools:desugar_jdk_libs:2.0.4\"")
+
+          # Ensure compileOptions has coreLibraryDesugaringEnabled true
+          if "coreLibraryDesugaringEnabled" not in content:
+              content = content.replace("compileOptions {", "compileOptions {\n        coreLibraryDesugaringEnabled true")
+
+          with open("android/app/build.gradle", "w") as f:
+              f.write(content)
+          '
 
       - name: Install Dependencies
         run: flutter pub get
 
       - name: Build App Bundle (AAB for Cafe Bazaar)
-        run: flutter build appbundle --release
+        run: flutter build appbundle --release --no-tree-shake-icons
 
       - name: Build APK (for Testing)
-        run: flutter build apk --release
+        run: flutter build apk --release --no-tree-shake-icons
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -88,3 +73,4 @@ jobs:
           path: |
             build/app/outputs/bundle/release/*.aab
             build/app/outputs/flutter-apk/*.apk
+          retention-days: 30
