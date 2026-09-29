@@ -36,24 +36,52 @@ jobs:
 
       - name: Configure Desugaring and MinSDK
         run: |
-          GRADLE_FILE="android/app/build.gradle"
-          if [ -f "android/app/build.gradle.kts" ]; then
-            GRADLE_FILE="android/app/build.gradle.kts"
-          fi
-
           python3 -c '
-          with open("android/app/build.gradle", "r") as f:
+          import os
+
+          # Path detection (Groovy or Kotlin DSL)
+          target_file = None
+          for path in ["android/app/build.gradle.kts", "android/app/build.gradle"]:
+              if os.path.exists(path):
+                  target_file = path
+                  break
+
+          if not target_file:
+              print("No gradle file found!")
+              exit(1)
+
+          with open(target_file, "r") as f:
               content = f.read()
 
-          # Ensure coreLibraryDesugaring dependency exists
-          if "coreLibraryDesugaring" not in content:
-              content = content.replace("dependencies {", "dependencies {\n    coreLibraryDesugaring \"com.android.tools:desugar_jdk_libs:2.0.4\"")
+          is_kts = target_file.endswith(".kts")
 
-          # Ensure compileOptions has coreLibraryDesugaringEnabled true
-          if "coreLibraryDesugaringEnabled" not in content:
-              content = content.replace("compileOptions {", "compileOptions {\n        coreLibraryDesugaringEnabled true")
+          if is_kts:
+              # Kotlin DSL
+              if "coreLibraryDesugaring" not in content:
+                  if "dependencies {" in content:
+                      content = content.replace("dependencies {", "dependencies {\n    coreLibraryDesugaring(\"com.android.tools:desugar_jdk_libs:2.0.4\")")
+                  else:
+                      content += "\ndependencies {\n    coreLibraryDesugaring(\"com.android.tools:desugar_jdk_libs:2.0.4\")\n}\n"
 
-          with open("android/app/build.gradle", "w") as f:
+              if "isCoreLibraryDesugaringEnabled" not in content and "coreLibraryDesugaringEnabled" not in content:
+                  content = content.replace("compileOptions {", "compileOptions {\n        isCoreLibraryDesugaringEnabled = true")
+
+              # Ensure minSdkVersion is at least 21
+              content = content.replace("minSdk = flutter.minSdkVersion", "minSdk = 21")
+          else:
+              # Groovy DSL
+              if "coreLibraryDesugaring" not in content:
+                  if "dependencies {" in content:
+                      content = content.replace("dependencies {", "dependencies {\n    coreLibraryDesugaring \"com.android.tools:desugar_jdk_libs:2.0.4\"")
+                  else:
+                      content += "\ndependencies {\n    coreLibraryDesugaring \"com.android.tools:desugar_jdk_libs:2.0.4\"\n}\n"
+
+              if "coreLibraryDesugaringEnabled" not in content:
+                  content = content.replace("compileOptions {", "compileOptions {\n        coreLibraryDesugaringEnabled true")
+
+              content = content.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 21")
+
+          with open(target_file, "w") as f:
               f.write(content)
           '
 
